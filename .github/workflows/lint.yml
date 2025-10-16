@@ -1,4 +1,4 @@
-name: lint-with-reviewdog
+name: ktlint
 
 on:
   workflow_dispatch:
