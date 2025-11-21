@@ -1,0 +1,77 @@
+name: Bulk Branch Creator
+
+on:
+  # Erlaubt den manuellen Start über die GitHub-Oberfläche
+  workflow_dispatch:
+    inputs:
+      repos_list:
+        description: 'Komma-separierte Liste der Repositories (z.B. repo-api, repo-web)'
+        required: true
+        type: string
+      new_branch_name:
+        description: 'Name des neuen Branches, der erstellt werden soll'
+        required: true
+        type: string
+      base_branch:
+        description: 'Basis-Branch (z.B. main oder develop)'
+        required: true
+        default: 'main'
+
+jobs:
+  create_branches:
+    # Wichtig: Der Job muss auf der Organisationsebene gestartet werden
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Konfiguriere Umgebung
+        run: |
+          # Speichert die Organisation in einer Umgebungsvariable
+          ORG="${{ github.repository_owner }}"
+          echo "ORG=$ORG" >> $GITHUB_ENV
+          echo "NEW_BRANCH=${{ inputs.new_branch_name }}" >> $GITHUB_ENV
+          echo "BASE_BRANCH=${{ inputs.base_branch }}" >> $GITHUB_ENV
+
+      - name: Installiere GitHub CLI
+        # Die meisten Runner haben 'gh' bereits installiert, aber zur Sicherheit
+        uses: actions/setup-cli@v1 
+
+      - name: Repositories durchlaufen und Branch erstellen
+        env:
+          # Der automatische Token wird für die API-Aufrufe benötigt
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Teilt die eingegebene Zeichenkette (z.B. "repo-api, repo-web") in eine Liste auf
+          REPOS_ARRAY=$(echo "${{ inputs.repos_list }}" | tr ',' '\n')
+          
+          echo "Starte Branch-Erstellung..."
+          
+          for REPO_NAME in $REPOS_ARRAY; do
+            REPO_NAME=$(echo "$REPO_NAME" | xargs) # Leerzeichen entfernen
+            REPO_SLUG="${ORG}/${REPO_NAME}"
+
+            echo "--- Bearbeite ${REPO_SLUG} ---"
+
+            # 1. Abrufen der SHA des Basis-Branches
+            SHA=$(gh api repos/${REPO_SLUG}/branches/${BASE_BRANCH} --jq '.commit.sha' 2>/dev/null)
+            
+            if [ -z "$SHA" ] || [ "$SHA" == "null" ]; then
+                echo "❌ FEHLER: Basis-Branch ${BASE_BRANCH} in ${REPO_NAME} nicht gefunden oder kein Zugriff. Überspringe."
+                continue
+            fi
+            
+            # 2. Erstellen der neuen Branch-Referenz über die Git-API
+            gh api --method POST \
+                -H "Accept: application/vnd.github.v3+json" \
+                /repos/${REPO_SLUG}/git/refs \
+                -f ref="refs/heads/${NEW_BRANCH}" \
+                -f sha="$SHA" 2>&1 | tee output.log
+
+            if grep -q "201 Created" output.log; then
+                echo "✅ Branch ${NEW_BRANCH} erfolgreich erstellt."
+            elif grep -q "already exists" output.log; then
+                echo "⚠️ Branch ${NEW_BRANCH} existiert bereits."
+            else
+                echo "❌ Unbekannter Fehler beim Erstellen des Branches. Siehe Log."
+            fi
+            rm -f output.log
+          done
